@@ -1,70 +1,131 @@
-# Gerekli kütüphaneleri içe aktar
+import yfinance as yf
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import GradientBoostingRegressor
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.preprocessing import StandardScaler
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.linear_model import LinearRegression
+from scipy.stats import pearsonr
+from scipy.stats import ttest_1samp
 
-# Veriyi yükle
-data = pd.read_csv('bitcoin_2010-07-27_2024-04-25.csv')
+def dynamic_dca(starting_capital, base_investment, price_data):
+    # Initialize DataFrame to store investment data
+    investment_data = pd.DataFrame(index=price_data.index)
+    investment_data['price'] = price_data['Adj Close']
 
-# Check if 'Date' column exists
-if 'Date' in data.columns:
-    data['Date'] = pd.to_datetime(data['Date'])
-    data.set_index('Date', inplace=True)
+    # Ensure all monetary and BTC amounts are treated as floating point
+    investment_data['monthly_investment'] = float(base_investment)
+    investment_data['btc_bought'] = investment_data['monthly_investment'] / investment_data['price']
 
-# Hareketli Ortalamalar ve RSI hesaplama
-data['SMA_30'] = data['Close'].rolling(window=30).mean()
-data['SMA_60'] = data['Close'].rolling(window=60).mean()
+    # Track remaining capital as floating point
+    current_capital = float(starting_capital - base_investment)
 
-# Fonksiyon tanımlaması
-def compute_rsi(data, window=14):
-    diff = data.diff(1)
-    gain = (diff.where(diff > 0, 0)).rolling(window=window).mean()
-    loss = (-diff.where(diff < 0, 0)).rolling(window=window).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
+    # Apply DCA strategy
+    for i in range(1, len(investment_data)):
+        # Calculate percentage change in price
+        price_change = (investment_data['price'].iloc[i] / investment_data['price'].iloc[i - 1] - 1) * 100
 
-data['RSI'] = compute_rsi(data['Close'], 14)  # RSI fonksiyonunun tanımı gereklidir
+        # Adjust investment based on price change
+        if price_change < -10:  # If price drops by more than 10%
+            investment = min(current_capital, investment_data['monthly_investment'].iloc[i - 1] * 1.50)
+        elif price_change > 10:  # If price rises by more than 10%
+            investment = max(0, investment_data['monthly_investment'].iloc[i - 1] * 0.50)
+        else:
+            investment = min(current_capital, base_investment)
 
-# Eksik verileri temizle
-data.dropna(inplace=True)
+        # Apply investment and calculate BTC bought
+        investment_data.loc[investment_data.index[i], 'monthly_investment'] = float(investment)
+        investment_data.loc[investment_data.index[i], 'btc_bought'] = investment / investment_data['price'].iloc[i]
+        current_capital -= investment
+        current_capital = max(current_capital, 0)  # Ensure no negative capital
 
-# Özellikler ve hedef
-features = ['Open', 'High', 'Low', 'Volume', 'Market Cap', 'SMA_30', 'SMA_60', 'RSI']
-target = 'Close'
+    # Calculate total BTC and value
+    investment_data['total_btc'] = investment_data['btc_bought'].cumsum()
+    investment_data['total_value'] = investment_data['total_btc'] * investment_data['price']
 
-# Özellikleri ve hedefi ayır
-X = data[features]
-y = data[target]
+    return investment_data
 
-# Veriyi ölçeklendir
-scaler = StandardScaler()
-X_scaled = scaler.fit_transform(X)
+# Load data
+btc_data = yf.download("BTC-USD", start="2018-01-01", end="2024-05-01", interval="1mo")
+btc_data['Adj Close'].dropna(inplace=True)
 
-# Veriyi eğitim ve test setlerine ayır
-X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
+# Run the simulation
+results = dynamic_dca(10000, 1000, btc_data)
 
-# Modeli oluştur ve eğit
-model = GradientBoostingRegressor(n_estimators=100, learning_rate=0.1, max_depth=5, random_state=42)
-model.fit(X_train, y_train)
+def calculate_returns(data):
+    """ Calculate monthly and annual returns """
+    data['monthly_return'] = data['total_value'].pct_change()
+    data['annual_return'] = data['total_value'].pct_change(12)  # Assuming the data is monthly
 
-# Tahmin yap ve model performansını değerlendir
-predictions = model.predict(X_test)
-mae = mean_absolute_error(y_test, predictions)
-mse = mean_squared_error(y_test, predictions)
-r2 = r2_score(y_test, predictions)
+def calculate_volatility(data):
+    """ Calculate monthly and annual volatility """
+    data['monthly_volatility'] = data['monthly_return'].rolling(window=12).std()
+    data['annual_volatility'] = data['annual_return'].rolling(window=12).std()
 
-# Performans metriklerini yazdır
-print("MAE:", mae)
-print("MSE:", mse)
-print("R^2:", r2)
+def linear_regression_analysis(data):
+    """ Perform linear regression on total value over time """
+    model = LinearRegression()
+    x = np.array(range(len(data))).reshape(-1, 1)  # Time as independent variable
+    y = data['total_value'].values.reshape(-1, 1)  # Total value as dependent variable
+    model.fit(x, y)
+    return model.coef_[0][0], model.intercept_[0]  # Slope and intercept
 
-# En son veri noktasını kullanarak 2025 yılı için fiyat tahmini yap
-latest_features = data[features].iloc[-1].values.reshape(1, -1)  # Özellikleri al
-latest_features_scaled = scaler.transform(latest_features)  # Özellikleri ölçeklendir
-price_prediction_2025 = model.predict(latest_features_scaled)  # Tahmini yap
+def sharpe_ratio(data):
+    """ Calculate Sharpe Ratio assuming risk-free rate is 0 for simplicity """
+    return data['annual_return'].mean() / data['annual_return'].std()
 
-# Tahmin sonucunu yazdır
-print("2025 yılı tahmini fiyatı:", price_prediction_2025[0])
+def plot_correlation(data):
+    """ Plot correlation between investment amounts and BTC price changes """
+    price_changes = data['price'].pct_change()
+    sns.scatterplot(x=price_changes, y=data['monthly_investment'])
+    plt.xlabel('Price Change (%)')
+    plt.ylabel('Investment Amount ($)')
+    plt.title('Correlation between Price Changes and Investment Amounts')
+    plt.show()
+    print("Correlation Coefficient:", pearsonr(price_changes[1:], data['monthly_investment'][1:])[0])
+
+def calculate_statistics(data):
+    """Calculate various financial statistics."""
+    data['cumulative_return'] = (1 + data['monthly_return']).cumprod() - 1
+    annualized_return = np.power(1 + data['cumulative_return'].iloc[-1], 12 / len(data)) - 1
+    cagr = ((data['total_value'].iloc[-1] / data['total_value'].iloc[0]) ** (12 / len(data))) - 1
+    max_drawdown = (data['total_value'].cummax() - data['total_value']).max() / data['total_value'].cummax().max()
+    data['drawdown'] = (data['total_value'].cummax() - data['total_value']) / data['total_value'].cummax()
+
+    print(f"Annualized Return: {annualized_return:.2%}")
+    print(f"CAGR (Compound Annual Growth Rate): {cagr:.2%}")
+    print(f"Maximum Drawdown: {max_drawdown:.2%}")
+
+    # T-tests
+    t_stat, p_value = ttest_1samp(data['monthly_return'].dropna(), 0)
+    print(f"Monthly Return T-Test: T-Stat={t_stat:.3f}, P-Value={p_value:.3f}")
+
+def plot_drawdown(data):
+    """Plot the drawdown over time."""
+    plt.figure(figsize=(10, 6))
+    plt.fill_between(data.index, data['drawdown'], color="red", step="pre", alpha=0.4)
+    plt.title('Drawdown over Time')
+    plt.ylabel('Drawdown')
+    plt.xlabel('Date')
+    plt.show()
+
+# Calculate returns and volatilities
+calculate_returns(results)
+calculate_volatility(results)
+
+# Calculate statistics
+calculate_statistics(results)
+plot_drawdown(results)
+
+# Perform linear regression
+slope, intercept = linear_regression_analysis(results)
+print(f"Linear Regression Slope: {slope}, Intercept: {intercept}")
+
+# Calculate Sharpe Ratio
+sharpe = sharpe_ratio(results)
+print(f"Sharpe Ratio: {sharpe}")
+
+# Plot correlation
+plot_correlation(results)
+
+
+# Cross correlation, t
