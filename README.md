@@ -1,1 +1,1 @@
-# bitcoin-price-prediction
+# bitcoin-dynamic-dollar-cost-average
