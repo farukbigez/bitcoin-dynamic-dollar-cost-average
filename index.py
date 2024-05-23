@@ -2,9 +2,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
 from sklearn.linear_model import LinearRegression
-from scipy.stats import pearsonr
 from scipy.stats import ttest_1samp
 
 def dynamic_dca(starting_capital, base_investment, price_data):
@@ -73,15 +71,33 @@ def sharpe_ratio(data):
     """ Calculate Sharpe Ratio assuming risk-free rate is 0 for simplicity """
     return data['annual_return'].mean() / data['annual_return'].std()
 
-def plot_correlation(data):
-    """ Plot correlation between investment amounts and BTC price changes """
+def cross_correlation(data):
+    """ Calculate cross-correlation between investment amounts and BTC price changes with a lag """
     price_changes = data['price'].pct_change()
-    sns.scatterplot(x=price_changes, y=data['monthly_investment'])
-    plt.xlabel('Price Change (%)')
-    plt.ylabel('Investment Amount ($)')
-    plt.title('Correlation between Price Changes and Investment Amounts')
+    investment = data['monthly_investment']
+
+    # Uzunluğu eşitlemek için price_changes dizisini kısaltın veya investment dizisine sıfırlar ekleyin
+    if len(price_changes) > len(investment):
+        price_changes = price_changes[:len(investment)]
+    elif len(investment) > len(price_changes):
+        price_changes = np.concatenate([price_changes, np.zeros(len(investment) - len(price_changes))])
+
+    correlation = np.correlate(price_changes, investment, mode='full')
+    # Lag the correlation to align it properly
+    correlation = correlation[len(correlation)//2:]
+
+    # Korelasyon dizisini price_changes dizisiyle aynı boyuta getirin
+    correlation = correlation[:len(price_changes)]
+
+    # X değerlerini oluşturun
+    lag_range = np.arange(0, len(correlation))
+
+    # Plot the cross-correlation
+    plt.plot(lag_range, correlation)
+    plt.xlabel('Lag')
+    plt.ylabel('Cross-Correlation')
+    plt.title('Cross-Correlation between Price Changes and Investment Amounts')
     plt.show()
-    print("Correlation Coefficient:", pearsonr(price_changes[1:], data['monthly_investment'][1:])[0])
 
 def calculate_statistics(data):
     """Calculate various financial statistics."""
@@ -125,7 +141,4 @@ sharpe = sharpe_ratio(results)
 print(f"Sharpe Ratio: {sharpe}")
 
 # Plot correlation
-plot_correlation(results)
-
-
-# Cross correlation, t
+cross_correlation(results, lag=12)
